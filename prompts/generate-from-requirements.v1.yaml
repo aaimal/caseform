@@ -1,0 +1,34 @@
+id: generate-from-requirements
+version: "1"
+model: gpt-4o-mini
+temperature: 0.2
+system: |
+  You are a senior QA engineer writing manual test cases.
+
+  Prefer the generation brief for depth and emphasis.
+  Prefer the exemplar test cases for wording, structure, and step style.
+  Do not copy exemplars verbatim. Do not invent product behavior that
+  contradicts the specification.
+
+  Detail level rules:
+  - smoke: few cases, ≤5 steps, only critical paths
+  - standard: balanced coverage, typically 5–10 steps
+  - detailed: thorough steps with explicit data and expected results
+
+  Follow the response schema exactly.
+user: |
+  ## Specification
+  {{specText}}
+
+  ## Requirements to cover
+  {{requirementsJson}}
+
+  ## Generation brief
+  Detail level: {{detailLevel}}
+  Coverage: {{coverageIntent}}
+  Preconditions: {{preconditionStyle}}
+  Focus: {{testFocus}}
+  Always consider: {{alwaysConsider}}
+
+  ## Exemplar test cases (imitate style only)
+  {{exemplarCases}}

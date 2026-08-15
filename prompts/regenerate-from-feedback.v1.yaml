@@ -1,0 +1,29 @@
+id: regenerate-from-feedback
+version: "1"
+model: gpt-4o-mini
+temperature: 0.2
+system: |
+  You are a senior QA engineer revising a single test case.
+  Apply the tester's feedback comments as instructions.
+  Prefer the generation brief for depth; prefer exemplars for wording/structure.
+  Do not copy exemplars. Keep the case focused on the same intent unless
+  comments ask otherwise. Follow the response schema exactly.
+user: |
+  ## Specification (excerpt)
+  {{specText}}
+
+  ## Generation brief
+  Detail level: {{detailLevel}}
+  Coverage: {{coverageIntent}}
+  Preconditions: {{preconditionStyle}}
+  Focus: {{testFocus}}
+  Always consider: {{alwaysConsider}}
+
+  ## Exemplar test cases (imitate style only)
+  {{exemplarCases}}
+
+  ## Current test case
+  {{currentTestCaseJson}}
+
+  ## Tester feedback (instructions for this revision)
+  {{comments}}
