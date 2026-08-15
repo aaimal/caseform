@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ensureUserAndOrg } from "@/lib/auth/workspace";
-import { getDb } from "@/lib/db";
-import { projects } from "@/lib/db/schema";
+import { createServiceClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { DEFAULT_BRIEF } from "@/lib/types";
 
@@ -21,24 +20,31 @@ export async function POST(req: Request) {
     }
 
     const { title } = bodySchema.parse(await req.json());
-
     const orgId = await ensureUserAndOrg({
       userId: user.id,
       email: user.email,
       displayName: user.user_metadata?.full_name,
     });
 
-    const db = getDb();
-    const [project] = await db
-      .insert(projects)
-      .values({
-        orgId,
+    const admin = createServiceClient();
+    const { data: project, error } = await admin
+      .from("projects")
+      .insert({
+        org_id: orgId,
         title,
         status: "draft",
-        generationBrief: DEFAULT_BRIEF,
-        createdBy: user.id,
+        generation_brief: DEFAULT_BRIEF,
+        created_by: user.id,
       })
-      .returning({ id: projects.id });
+      .select("id")
+      .single();
+
+    if (error || !project) {
+      return NextResponse.json(
+        { error: error?.message || "Could not create project" },
+        { status: 500 },
+      );
+    }
 
     return NextResponse.json({ id: project.id });
   } catch (err) {
