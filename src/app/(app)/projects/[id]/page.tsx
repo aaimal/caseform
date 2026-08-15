@@ -236,7 +236,7 @@ export default function ProjectWorkspacePage() {
           className="field min-h-48 font-mono text-sm"
           placeholder="Paste requirements / PRD text here…"
           value={spec}
-          onChange={(e) => setSpec(e.target.value)}
+          onChange={(e) => setSpec(sanitizeText(e.target.value))}
         />
       </section>
 

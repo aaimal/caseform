@@ -1,36 +1,56 @@
-import OpenAI from "openai";
 import type { AiProvider, GenerateInput, GenerateResult } from "../types";
+import { sanitizeText } from "@/lib/exemplars/helpers";
 
 export class OpenAiProvider implements AiProvider {
-  private client: OpenAI;
-
-  constructor(apiKey = process.env.OPENAI_API_KEY) {
+  constructor(private apiKey = process.env.OPENAI_API_KEY) {
     if (!apiKey) {
       throw new Error("OPENAI_API_KEY is not set");
     }
-    this.client = new OpenAI({ apiKey });
   }
 
   async generate(input: GenerateInput): Promise<GenerateResult> {
     const model = input.model ?? "gpt-4o-mini";
-    const response = await this.client.chat.completions.create({
-      model,
-      temperature: input.temperature ?? 0.2,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "structured_output",
-          strict: true,
-          schema: input.responseSchema,
-        },
+    const system = sanitizeText(input.prompt.system);
+    const user = sanitizeText(input.prompt.user);
+
+    // Use raw fetch with ASCII-only headers. The OpenAI SDK/undici path can throw
+    // ByteString errors when prompts contain U+2028 (common in PDF paste).
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
       },
-      messages: [
-        { role: "system", content: input.prompt.system },
-        { role: "user", content: input.prompt.user },
-      ],
+      body: JSON.stringify({
+        model,
+        temperature: input.temperature ?? 0.2,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "structured_output",
+            strict: true,
+            schema: input.responseSchema,
+          },
+        },
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      }),
     });
 
-    const text = response.choices[0]?.message?.content ?? "{}";
+    const payload = (await response.json()) as {
+      error?: { message?: string };
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      model?: string;
+    };
+
+    if (!response.ok) {
+      throw new Error(payload.error?.message || `OpenAI HTTP ${response.status}`);
+    }
+
+    const text = payload.choices?.[0]?.message?.content ?? "{}";
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
@@ -41,10 +61,10 @@ export class OpenAiProvider implements AiProvider {
     return {
       text,
       parsed,
-      model,
+      model: payload.model ?? model,
       usage: {
-        inputTokens: response.usage?.prompt_tokens,
-        outputTokens: response.usage?.completion_tokens,
+        inputTokens: payload.usage?.prompt_tokens,
+        outputTokens: payload.usage?.completion_tokens,
       },
     };
   }
