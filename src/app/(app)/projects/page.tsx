@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -12,23 +13,37 @@ type Project = {
 };
 
 export default function ProjectsPage() {
+  const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
     setError(null);
-    await fetch("/api/bootstrap", { method: "POST" });
-    const supabase = createClient();
-    const { data, error: err } = await supabase
-      .from("projects")
-      .select("id, title, status, updated_at")
-      .order("updated_at", { ascending: false });
-    if (err) setError(err.message);
-    setProjects((data as Project[]) ?? []);
-    setLoading(false);
+    try {
+      const boot = await fetch("/api/bootstrap", { method: "POST" });
+      const bootJson = await boot.json();
+      if (!boot.ok) {
+        setError(bootJson.error || "Workspace setup failed");
+        setProjects([]);
+        return;
+      }
+
+      const supabase = createClient();
+      const { data, error: err } = await supabase
+        .from("projects")
+        .select("id, title, status, updated_at")
+        .order("updated_at", { ascending: false });
+      if (err) setError(err.message);
+      setProjects((data as Project[]) ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load projects");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -37,36 +52,28 @@ export default function ProjectsPage() {
 
   async function createProject(e: React.FormEvent) {
     e.preventDefault();
-    if (!title.trim()) return;
-    const boot = await fetch("/api/bootstrap", { method: "POST" });
-    const { orgId } = await boot.json();
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const { data, error: err } = await supabase
-      .from("projects")
-      .insert({
-        title: title.trim(),
-        org_id: orgId,
-        created_by: user?.id,
-        status: "draft",
-        generation_brief: {
-          detailLevel: "standard",
-          coverageIntent: ["happy", "negative", "edge"],
-          preconditionStyle: "explicit",
-          testFocus: "functional",
-          alwaysConsider: "",
-        },
-      })
-      .select("id")
-      .single();
-    if (err) {
-      setError(err.message);
-      return;
+    if (!title.trim() || creating) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.trim() }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setError(json.error || "Could not create project");
+        return;
+      }
+      setTitle("");
+      router.push(`/projects/${json.id}`);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create project");
+    } finally {
+      setCreating(false);
     }
-    setTitle("");
-    window.location.href = `/projects/${data.id}`;
   }
 
   return (
@@ -80,15 +87,19 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      <form onSubmit={createProject} className="panel mt-8 flex flex-wrap gap-3 p-4">
+      <form
+        onSubmit={createProject}
+        className="panel mt-8 flex flex-wrap gap-3 p-4"
+      >
         <input
           className="field max-w-md flex-1"
           placeholder="New project title — e.g. Checkout v2"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
+          disabled={creating}
         />
-        <button type="submit" className="btn-primary">
-          Create project
+        <button type="submit" className="btn-primary" disabled={creating}>
+          {creating ? "Creating…" : "Create project"}
         </button>
       </form>
 
