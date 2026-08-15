@@ -1,19 +1,7 @@
 import { NextResponse } from "next/server";
-import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { getAiProvider } from "@/lib/ai";
 import { ensureUserAndOrg } from "@/lib/auth/workspace";
-import { getDb } from "@/lib/db";
-import {
-  exemplars,
-  generations,
-  projectExemplarSets,
-  projects,
-  specifications,
-  testCaseComments,
-  testCaseRevisions,
-  testCases,
-} from "@/lib/db/schema";
 import {
   formatBriefForPrompt,
   formatExemplarsForPrompt,
@@ -21,11 +9,13 @@ import {
 } from "@/lib/exemplars/helpers";
 import { interpolate, loadPrompt } from "@/lib/prompts/loader";
 import { singleCaseJsonSchema } from "@/lib/prompts/schemas";
+import { createServiceClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
   DEFAULT_BRIEF,
   generationBriefSchema,
   testCaseBodySchema,
+  type Step,
 } from "@/lib/types";
 
 const bodySchema = z.object({
@@ -50,67 +40,65 @@ export async function POST(req: Request) {
     });
 
     const { projectId, testCaseId } = bodySchema.parse(await req.json());
-    const db = getDb();
+    const admin = createServiceClient();
 
-    const [project] = await db
-      .select()
-      .from(projects)
-      .where(and(eq(projects.id, projectId), eq(projects.orgId, orgId)))
-      .limit(1);
+    const { data: project } = await admin
+      .from("projects")
+      .select("*")
+      .eq("id", projectId)
+      .eq("org_id", orgId)
+      .maybeSingle();
     if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    const [testCase] = await db
-      .select()
-      .from(testCases)
-      .where(and(eq(testCases.id, testCaseId), eq(testCases.projectId, projectId)))
-      .limit(1);
+    const { data: testCase } = await admin
+      .from("test_cases")
+      .select("*")
+      .eq("id", testCaseId)
+      .eq("project_id", projectId)
+      .maybeSingle();
     if (!testCase) {
       return NextResponse.json({ error: "Test case not found" }, { status: 404 });
     }
 
-    const comments = await db
-      .select()
-      .from(testCaseComments)
-      .where(
-        and(
-          eq(testCaseComments.testCaseId, testCaseId),
-          isNull(testCaseComments.consumedInGenerationId),
-        ),
-      );
+    const { data: comments } = await admin
+      .from("test_case_comments")
+      .select("*")
+      .eq("test_case_id", testCaseId)
+      .is("consumed_in_generation_id", null);
 
-    if (comments.length === 0) {
+    if (!comments?.length) {
       return NextResponse.json(
         { error: "Add feedback comments before regenerating" },
         { status: 400 },
       );
     }
 
-    const [spec] = await db
-      .select()
-      .from(specifications)
-      .where(eq(specifications.projectId, projectId))
+    const { data: specs } = await admin
+      .from("specifications")
+      .select("*")
+      .eq("project_id", projectId)
       .limit(1);
+    const spec = specs?.[0];
 
-    const linkedSets = await db
-      .select()
-      .from(projectExemplarSets)
-      .where(eq(projectExemplarSets.projectId, projectId));
+    const { data: linkedSets } = await admin
+      .from("project_exemplar_sets")
+      .select("exemplar_set_id")
+      .eq("project_id", projectId);
 
-    const exemplarRows =
-      linkedSets[0]
-        ? await db
-            .select()
-            .from(exemplars)
-            .where(eq(exemplars.exemplarSetId, linkedSets[0].exemplarSetId))
-        : [];
+    const { data: exemplarRows } = linkedSets?.[0]
+      ? await admin
+          .from("exemplars")
+          .select("*")
+          .eq("exemplar_set_id", linkedSets[0].exemplar_set_id)
+      : { data: [] as Record<string, unknown>[] };
 
     const brief = generationBriefSchema.parse(
-      project.generationBrief ?? DEFAULT_BRIEF,
+      project.generation_brief ?? DEFAULT_BRIEF,
     );
     const briefVars = formatBriefForPrompt(brief);
-    const { text: specText } = truncateSpec(spec?.rawText ?? "", 20000);
+    const { text: specText } = truncateSpec(spec?.raw_text ?? "", 20000);
     const tpl = loadPrompt("regenerate-from-feedback", "1");
     const ai = getAiProvider();
 
@@ -123,10 +111,10 @@ export async function POST(req: Request) {
         user: interpolate(tpl.user, {
           specText,
           exemplarCases: formatExemplarsForPrompt(
-            exemplarRows.map((e) => ({
-              title: e.title,
-              preconditions: e.preconditions,
-              steps: e.steps,
+            (exemplarRows ?? []).map((e) => ({
+              title: e.title as string,
+              preconditions: (e.preconditions as string) ?? "",
+              steps: e.steps as Step[],
             })),
           ),
           currentTestCaseJson: JSON.stringify(
@@ -146,61 +134,73 @@ export async function POST(req: Request) {
 
     const revised = testCaseBodySchema.parse(result.parsed);
 
-    const [generation] = await db
-      .insert(generations)
-      .values({
-        orgId,
-        projectId,
-        specificationId: testCase.specificationId,
+    const { data: generation, error: genError } = await admin
+      .from("generations")
+      .insert({
+        org_id: orgId,
+        project_id: projectId,
+        specification_id: testCase.specification_id,
         kind: "regenerate",
-        promptTemplateId: tpl.id,
-        promptVersion: tpl.version,
+        prompt_template_id: tpl.id,
+        prompt_version: tpl.version,
         model: result.model,
-        inputSnapshot: {
+        input_snapshot: {
           brief,
           testCaseId,
           commentIds: comments.map((c) => c.id),
         },
       })
-      .returning();
+      .select("id")
+      .single();
 
-    const before = {
-      title: testCase.title,
-      preconditions: testCase.preconditions,
-      steps: testCase.steps,
-      version: testCase.version,
-    };
+    if (genError || !generation) {
+      return NextResponse.json(
+        { error: genError?.message || "Failed to save generation" },
+        { status: 500 },
+      );
+    }
 
-    await db.insert(testCaseRevisions).values({
-      orgId,
-      testCaseId,
-      before,
+    await admin.from("test_case_revisions").insert({
+      org_id: orgId,
+      test_case_id: testCaseId,
+      before: {
+        title: testCase.title,
+        preconditions: testCase.preconditions,
+        steps: testCase.steps,
+        version: testCase.version,
+      },
       after: revised,
       source: "ai",
-      generationId: generation.id,
-      editedBy: user.id,
+      generation_id: generation.id,
+      edited_by: user.id,
     });
 
-    const [updated] = await db
-      .update(testCases)
-      .set({
+    const { data: updated, error: updateError } = await admin
+      .from("test_cases")
+      .update({
         title: revised.title,
         preconditions: revised.preconditions,
         steps: revised.steps,
         status: "edited",
-        version: testCase.version + 1,
-        generationId: generation.id,
-        updatedAt: new Date(),
+        version: (testCase.version as number) + 1,
+        generation_id: generation.id,
+        updated_at: new Date().toISOString(),
       })
-      .where(eq(testCases.id, testCaseId))
-      .returning();
+      .eq("id", testCaseId)
+      .select("*")
+      .single();
 
-    for (const c of comments) {
-      await db
-        .update(testCaseComments)
-        .set({ consumedInGenerationId: generation.id })
-        .where(eq(testCaseComments.id, c.id));
+    if (updateError) {
+      return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
+
+    await admin
+      .from("test_case_comments")
+      .update({ consumed_in_generation_id: generation.id })
+      .in(
+        "id",
+        comments.map((c) => c.id),
+      );
 
     return NextResponse.json({ testCase: updated });
   } catch (err) {

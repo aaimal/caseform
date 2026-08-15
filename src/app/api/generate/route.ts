@@ -1,17 +1,7 @@
 import { NextResponse } from "next/server";
-import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getAiProvider } from "@/lib/ai";
 import { ensureUserAndOrg } from "@/lib/auth/workspace";
-import { getDb } from "@/lib/db";
-import {
-  exemplars,
-  generations,
-  projectExemplarSets,
-  projects,
-  specifications,
-  testCases,
-} from "@/lib/db/schema";
 import {
   filterDrift,
   formatBriefForPrompt,
@@ -23,12 +13,14 @@ import {
   requirementsJsonSchema,
   suiteJsonSchema,
 } from "@/lib/prompts/schemas";
+import { createServiceClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
   DEFAULT_BRIEF,
   generationBriefSchema,
   generatedSuiteSchema,
   requirementsSchema,
+  type Step,
 } from "@/lib/types";
 
 const bodySchema = z.object({
@@ -52,51 +44,66 @@ export async function POST(req: Request) {
     });
 
     const { projectId } = bodySchema.parse(await req.json());
-    const db = getDb();
+    const admin = createServiceClient();
 
-    const [project] = await db
-      .select()
-      .from(projects)
-      .where(and(eq(projects.id, projectId), eq(projects.orgId, orgId)))
-      .limit(1);
+    const { data: project, error: projectError } = await admin
+      .from("projects")
+      .select("*")
+      .eq("id", projectId)
+      .eq("org_id", orgId)
+      .maybeSingle();
 
+    if (projectError) {
+      return NextResponse.json({ error: projectError.message }, { status: 500 });
+    }
     if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    const [spec] = await db
-      .select()
-      .from(specifications)
-      .where(eq(specifications.projectId, projectId))
-      .orderBy(desc(specifications.createdAt))
+    const { data: specs, error: specError } = await admin
+      .from("specifications")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
       .limit(1);
 
-    if (!spec?.rawText?.trim()) {
+    if (specError) {
+      return NextResponse.json({ error: specError.message }, { status: 500 });
+    }
+
+    const spec = specs?.[0];
+    if (!spec?.raw_text?.trim()) {
       return NextResponse.json(
         { error: "Add a specification before generating" },
         { status: 400 },
       );
     }
 
-    const linkedSets = await db
-      .select({ setId: projectExemplarSets.exemplarSetId })
-      .from(projectExemplarSets)
-      .where(eq(projectExemplarSets.projectId, projectId));
+    const { data: linkedSets, error: linkError } = await admin
+      .from("project_exemplar_sets")
+      .select("exemplar_set_id")
+      .eq("project_id", projectId);
 
-    if (linkedSets.length === 0) {
+    if (linkError) {
+      return NextResponse.json({ error: linkError.message }, { status: 500 });
+    }
+    if (!linkedSets?.length) {
       return NextResponse.json(
         { error: "Attach at least one exemplar set" },
         { status: 400 },
       );
     }
 
-    const exemplarRows = await db
-      .select()
-      .from(exemplars)
-      .where(eq(exemplars.exemplarSetId, linkedSets[0].setId))
-      .orderBy(asc(exemplars.sortOrder));
+    const { data: exemplarRows, error: exemplarError } = await admin
+      .from("exemplars")
+      .select("*")
+      .eq("exemplar_set_id", linkedSets[0].exemplar_set_id)
+      .order("sort_order", { ascending: true });
 
-    if (exemplarRows.length < 1) {
+    if (exemplarError) {
+      return NextResponse.json({ error: exemplarError.message }, { status: 500 });
+    }
+    if (!exemplarRows?.length) {
       return NextResponse.json(
         { error: "Exemplar set needs at least one manual test case" },
         { status: 400 },
@@ -104,18 +111,17 @@ export async function POST(req: Request) {
     }
 
     const brief = generationBriefSchema.parse(
-      project.generationBrief ?? DEFAULT_BRIEF,
+      project.generation_brief ?? DEFAULT_BRIEF,
     );
-    const { text: specText, truncated } = truncateSpec(spec.rawText);
+    const { text: specText, truncated } = truncateSpec(spec.raw_text);
     const exemplarBodies = exemplarRows.map((e) => ({
-      title: e.title,
-      preconditions: e.preconditions,
-      steps: e.steps,
+      title: e.title as string,
+      preconditions: (e.preconditions as string) ?? "",
+      steps: e.steps as Step[],
     }));
     const briefVars = formatBriefForPrompt(brief);
     const ai = getAiProvider();
 
-    // Pass A — requirements
     const extractTpl = loadPrompt("extract-requirements", "1");
     const extractResult = await ai.generate({
       model: extractTpl.model,
@@ -128,7 +134,6 @@ export async function POST(req: Request) {
     });
     const requirements = requirementsSchema.parse(extractResult.parsed);
 
-    // Pass B — cases
     const genTpl = loadPrompt("generate-from-requirements", "1");
     const genResult = await ai.generate({
       model: genTpl.model,
@@ -156,7 +161,6 @@ export async function POST(req: Request) {
       }
     ).testCases;
 
-    // Validate shape
     generatedSuiteSchema.parse({
       testCases: withReq.map((c) => ({
         title: c.title,
@@ -167,17 +171,17 @@ export async function POST(req: Request) {
 
     const { kept, dropped } = filterDrift(withReq, exemplarBodies);
 
-    const [generation] = await db
-      .insert(generations)
-      .values({
-        orgId,
-        projectId,
-        specificationId: spec.id,
+    const { data: generation, error: genInsertError } = await admin
+      .from("generations")
+      .insert({
+        org_id: orgId,
+        project_id: projectId,
+        specification_id: spec.id,
         kind: "generate",
-        promptTemplateId: genTpl.id,
-        promptVersion: genTpl.version,
+        prompt_template_id: genTpl.id,
+        prompt_version: genTpl.version,
         model: genResult.model,
-        inputSnapshot: {
+        input_snapshot: {
           brief,
           requirementCount: requirements.requirements.length,
           requirements: requirements.requirements,
@@ -186,36 +190,51 @@ export async function POST(req: Request) {
           droppedDriftTitles: dropped.map((d) => d.title),
         },
       })
-      .returning();
+      .select("id")
+      .single();
 
-    await db.delete(testCases).where(eq(testCases.projectId, projectId));
+    if (genInsertError || !generation) {
+      return NextResponse.json(
+        { error: genInsertError?.message || "Failed to save generation" },
+        { status: 500 },
+      );
+    }
 
-    const inserted = await db
-      .insert(testCases)
-      .values(
+    await admin.from("test_cases").delete().eq("project_id", projectId);
+
+    const { data: inserted, error: caseInsertError } = await admin
+      .from("test_cases")
+      .insert(
         kept.map((c) => ({
-          orgId,
-          projectId,
-          specificationId: spec.id,
+          org_id: orgId,
+          project_id: projectId,
+          specification_id: spec.id,
           title: c.title,
           preconditions: c.preconditions ?? "",
           steps: c.steps,
-          status: "generated" as const,
-          generationId: generation.id,
+          status: "generated",
+          generation_id: generation.id,
           version: 1,
-          requirementId: c.requirementId ?? null,
+          requirement_id: c.requirementId ?? null,
         })),
       )
-      .returning();
+      .select("id");
 
-    await db
-      .update(projects)
-      .set({ status: "generated", updatedAt: new Date() })
-      .where(eq(projects.id, projectId));
+    if (caseInsertError) {
+      return NextResponse.json(
+        { error: caseInsertError.message },
+        { status: 500 },
+      );
+    }
+
+    await admin
+      .from("projects")
+      .update({ status: "generated", updated_at: new Date().toISOString() })
+      .eq("id", projectId);
 
     return NextResponse.json({
       generationId: generation.id,
-      count: inserted.length,
+      count: inserted?.length ?? 0,
       droppedDrift: dropped.length,
       requirements: requirements.requirements,
     });

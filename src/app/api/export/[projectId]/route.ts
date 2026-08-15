@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { and, eq, inArray } from "drizzle-orm";
 import { ensureUserAndOrg } from "@/lib/auth/workspace";
-import { getDb } from "@/lib/db";
-import { projects, testCases } from "@/lib/db/schema";
 import { casesToCsv } from "@/lib/export/csv";
+import { createServiceClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import type { Step } from "@/lib/types";
 
 export async function GET(
   req: Request,
@@ -30,31 +29,30 @@ export async function GET(
       displayName: user.user_metadata?.full_name,
     });
 
-    const db = getDb();
-    const [project] = await db
-      .select()
-      .from(projects)
-      .where(and(eq(projects.id, projectId), eq(projects.orgId, orgId)))
-      .limit(1);
+    const admin = createServiceClient();
+    const { data: project } = await admin
+      .from("projects")
+      .select("id, title")
+      .eq("id", projectId)
+      .eq("org_id", orgId)
+      .maybeSingle();
+
     if (!project) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const statuses = includeEdited
-      ? (["accepted", "edited"] as const)
-      : (["accepted"] as const);
+    const statuses = includeEdited ? ["accepted", "edited"] : ["accepted"];
+    const { data: rows, error } = await admin
+      .from("test_cases")
+      .select("title, preconditions, steps, status")
+      .eq("project_id", projectId)
+      .in("status", statuses);
 
-    const rows = await db
-      .select()
-      .from(testCases)
-      .where(
-        and(
-          eq(testCases.projectId, projectId),
-          inArray(testCases.status, [...statuses]),
-        ),
-      );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
-    if (rows.length === 0) {
+    if (!rows?.length) {
       return NextResponse.json(
         {
           error: includeEdited
@@ -69,7 +67,7 @@ export async function GET(
       rows.map((r) => ({
         title: r.title,
         preconditions: r.preconditions,
-        steps: r.steps,
+        steps: r.steps as Step[],
         status: r.status,
       })),
       { jira },
