@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { GenerationBriefForm } from "@/components/GenerationBriefForm";
 import { Stepper } from "@/components/Stepper";
 import { createClient } from "@/lib/supabase/client";
+import { sanitizeText } from "@/lib/exemplars/helpers";
 import { DEFAULT_BRIEF, type GenerationBrief } from "@/lib/types";
 
 type ExemplarSet = { id: string; name: string; count: number };
@@ -96,6 +97,7 @@ export default function ProjectWorkspacePage() {
     setMessage(null);
     if (!orgId) throw new Error("Workspace not ready");
     const supabase = createClient();
+    const cleanSpec = sanitizeText(spec);
 
     await supabase
       .from("projects")
@@ -108,20 +110,24 @@ export default function ProjectWorkspacePage() {
     if (specId) {
       await supabase
         .from("specifications")
-        .update({ raw_text: spec })
+        .update({ raw_text: cleanSpec })
         .eq("id", specId);
-    } else if (spec.trim()) {
+    } else if (cleanSpec.trim()) {
       const { data } = await supabase
         .from("specifications")
         .insert({
           org_id: orgId,
           project_id: id,
           source_type: "paste",
-          raw_text: spec,
+          raw_text: cleanSpec,
         })
         .select("id")
         .single();
       setSpecId(data?.id ?? null);
+    }
+
+    if (cleanSpec !== spec) {
+      setSpec(cleanSpec);
     }
 
     await supabase.from("project_exemplar_sets").delete().eq("project_id", id);

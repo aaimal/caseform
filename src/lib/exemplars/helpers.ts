@@ -1,5 +1,14 @@
 import type { GenerationBrief, TestCaseBody } from "@/lib/types";
 
+/** Strip chars that break HTTP headers / some runtimes (e.g. U+2028 from PDF paste). */
+export function sanitizeText(input: string): string {
+  return input
+    .replace(/\u2028/g, "\n") // LINE SEPARATOR
+    .replace(/\u2029/g, "\n\n") // PARAGRAPH SEPARATOR
+    .replace(/\u00a0/g, " ") // NBSP
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+}
+
 export function formatExemplarsForPrompt(
   cases: TestCaseBody[],
   max = 8,
@@ -8,9 +17,12 @@ export function formatExemplarsForPrompt(
   return slice
     .map((c, i) => {
       const steps = c.steps
-        .map((s, n) => `  ${n + 1}. ${s.action} → ${s.expected}`)
+        .map(
+          (s, n) =>
+            `  ${n + 1}. ${sanitizeText(s.action)} → ${sanitizeText(s.expected)}`,
+        )
         .join("\n");
-      return `### Exemplar ${i + 1}: ${c.title}\nPreconditions: ${c.preconditions || "(none)"}\nSteps:\n${steps}`;
+      return `### Exemplar ${i + 1}: ${sanitizeText(c.title)}\nPreconditions: ${sanitizeText(c.preconditions) || "(none)"}\nSteps:\n${steps}`;
     })
     .join("\n\n");
 }
@@ -21,7 +33,7 @@ export function formatBriefForPrompt(brief: GenerationBrief) {
     coverageIntent: brief.coverageIntent.join(", "),
     preconditionStyle: brief.preconditionStyle,
     testFocus: brief.testFocus,
-    alwaysConsider: brief.alwaysConsider || "(none)",
+    alwaysConsider: sanitizeText(brief.alwaysConsider) || "(none)",
   };
 }
 
@@ -48,13 +60,14 @@ export function filterDrift<T extends { title: string }>(
 }
 
 export function truncateSpec(text: string, maxChars = 60000) {
-  if (text.length <= maxChars) {
-    return { text, truncated: false };
+  const cleaned = sanitizeText(text);
+  if (cleaned.length <= maxChars) {
+    return { text: cleaned, truncated: false };
   }
   const head = Math.floor(maxChars * 0.6);
   const tail = maxChars - head - 80;
   return {
-    text: `${text.slice(0, head)}\n\n[... truncated middle ...]\n\n${text.slice(-tail)}`,
+    text: `${cleaned.slice(0, head)}\n\n[... truncated middle ...]\n\n${cleaned.slice(-tail)}`,
     truncated: true,
   };
 }
