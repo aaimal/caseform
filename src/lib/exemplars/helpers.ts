@@ -2,11 +2,33 @@ import type { GenerationBrief, TestCaseBody } from "@/lib/types";
 
 /** Strip chars that break HTTP headers / some runtimes (e.g. U+2028 from PDF paste). */
 export function sanitizeText(input: string): string {
-  return input
-    .replace(/\u2028/g, "\n") // LINE SEPARATOR
-    .replace(/\u2029/g, "\n\n") // PARAGRAPH SEPARATOR
-    .replace(/\u00a0/g, " ") // NBSP
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+  return (
+    input
+      // Unicode line/paragraph separators (PDF / Word paste)
+      .replace(/\u2028/g, "\n")
+      .replace(/\u2029/g, "\n\n")
+      // BOM / zero-widths / bidi marks
+      .replace(/[\u200B-\u200F\uFEFF]/g, "")
+      // NBSP and related spaces → normal space
+      .replace(/[\u00A0\u202F\u2007]/g, " ")
+      // C0 controls except tab/newline/carriage return
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+      // Normalize newlines
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+  );
+}
+
+/** Ensure a value is safe to put in an HTTP header (Latin-1 / ByteString). */
+export function assertLatin1Header(value: string, label: string): string {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) > 255) {
+      throw new Error(
+        `${label} contains a non-Latin-1 character at index ${i} (code ${value.charCodeAt(i)}). Re-paste the API key in Vercel without hidden characters.`,
+      );
+    }
+  }
+  return value.trim();
 }
 
 export function formatExemplarsForPrompt(

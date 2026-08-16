@@ -1,11 +1,14 @@
 import type { AiProvider, GenerateInput, GenerateResult } from "../types";
-import { sanitizeText } from "@/lib/exemplars/helpers";
+import { assertLatin1Header, sanitizeText } from "@/lib/exemplars/helpers";
 
 export class OpenAiProvider implements AiProvider {
-  constructor(private apiKey = process.env.OPENAI_API_KEY) {
+  private apiKey: string;
+
+  constructor(apiKey = process.env.OPENAI_API_KEY) {
     if (!apiKey) {
       throw new Error("OPENAI_API_KEY is not set");
     }
+    this.apiKey = assertLatin1Header(apiKey, "OPENAI_API_KEY");
   }
 
   async generate(input: GenerateInput): Promise<GenerateResult> {
@@ -13,8 +16,7 @@ export class OpenAiProvider implements AiProvider {
     const system = sanitizeText(input.prompt.system);
     const user = sanitizeText(input.prompt.user);
 
-    // Use raw fetch with ASCII-only headers. The OpenAI SDK/undici path can throw
-    // ByteString errors when prompts contain U+2028 (common in PDF paste).
+    // Raw fetch + ASCII headers only. Avoids undici ByteString errors from U+2028 in prompts.
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {

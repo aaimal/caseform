@@ -95,47 +95,21 @@ export default function ProjectWorkspacePage() {
   async function saveSpecAndBrief() {
     setError(null);
     setMessage(null);
-    if (!orgId) throw new Error("Workspace not ready");
-    const supabase = createClient();
     const cleanSpec = sanitizeText(spec);
+    if (cleanSpec !== spec) setSpec(cleanSpec);
 
-    await supabase
-      .from("projects")
-      .update({
-        generation_brief: brief,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", id);
-
-    if (specId) {
-      await supabase
-        .from("specifications")
-        .update({ raw_text: cleanSpec })
-        .eq("id", specId);
-    } else if (cleanSpec.trim()) {
-      const { data } = await supabase
-        .from("specifications")
-        .insert({
-          org_id: orgId,
-          project_id: id,
-          source_type: "paste",
-          raw_text: cleanSpec,
-        })
-        .select("id")
-        .single();
-      setSpecId(data?.id ?? null);
-    }
-
-    if (cleanSpec !== spec) {
-      setSpec(cleanSpec);
-    }
-
-    await supabase.from("project_exemplar_sets").delete().eq("project_id", id);
-    if (selectedSetId) {
-      await supabase.from("project_exemplar_sets").insert({
-        project_id: id,
-        exemplar_set_id: selectedSetId,
-      });
+    const res = await fetch(`/api/projects/${id}/prepare`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        specText: cleanSpec,
+        brief,
+        exemplarSetId: selectedSetId || null,
+      }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      throw new Error(json.error || "Failed to save draft");
     }
   }
 
