@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Step, TestCaseStatus } from "@/lib/types";
 
 type CaseView = {
@@ -28,18 +28,34 @@ export function TestCaseCard({
   }) => Promise<void>;
   onAccept: () => Promise<void>;
   onComment: (body: string) => Promise<void>;
-  onRegenerate: () => Promise<void>;
+  onRegenerate: (feedback?: string) => Promise<void>;
 }) {
   const [title, setTitle] = useState(testCase.title);
   const [preconditions, setPreconditions] = useState(testCase.preconditions);
   const [steps, setSteps] = useState(testCase.steps);
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setTitle(testCase.title);
+    setPreconditions(testCase.preconditions);
+    setSteps(testCase.steps);
+  }, [
+    testCase.id,
+    testCase.version,
+    testCase.title,
+    testCase.preconditions,
+    testCase.steps,
+  ]);
 
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label);
+    setLocalError(null);
     try {
       await fn();
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setBusy(null);
     }
@@ -144,13 +160,14 @@ export function TestCaseCard({
               Feedback for AI
             </span>
             <span className="mb-2 block text-xs text-[var(--muted)]">
-              What should change? Comments become regeneration instructions.
+              Type what should change, then regenerate — feedback is sent
+              automatically.
             </span>
             <textarea
               className="field min-h-16"
               value={comment}
               onChange={(e) => setComment(e.target.value)}
-              placeholder="e.g. Add a negative path for expired session"
+              placeholder="e.g. Expected result should say the document is closed or minimized"
             />
           </label>
           <div className="mt-2 flex flex-wrap gap-2">
@@ -165,17 +182,34 @@ export function TestCaseCard({
                 })
               }
             >
-              {busy === "comment" ? "…" : "Add comment"}
+              {busy === "comment" ? "…" : "Save comment only"}
             </button>
             <button
               type="button"
               className="btn-primary"
               disabled={!!busy}
-              onClick={() => run("regen", onRegenerate)}
+              onClick={() =>
+                run("regen", async () => {
+                  const pending = comment.trim();
+                  if (
+                    !pending &&
+                    !(testCase.comments ?? []).some((c) => !c.consumed)
+                  ) {
+                    throw new Error(
+                      "Add feedback in the box above before regenerating",
+                    );
+                  }
+                  await onRegenerate(pending || undefined);
+                  setComment("");
+                })
+              }
             >
               {busy === "regen" ? "Regenerating…" : "Regenerate this case"}
             </button>
           </div>
+          {localError ? (
+            <p className="mt-2 text-sm text-[var(--danger)]">{localError}</p>
+          ) : null}
           {testCase.comments && testCase.comments.length > 0 ? (
             <ul className="mt-3 space-y-1 text-xs text-[var(--muted)]">
               {testCase.comments.map((c) => (

@@ -124,17 +124,20 @@ export default function ReviewPage() {
     await load();
   }
 
-  async function regenerate(caseId: string) {
+  async function regenerate(caseId: string, feedback?: string) {
     setError(null);
     const res = await fetch("/api/regenerate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: id, testCaseId: caseId }),
+      body: JSON.stringify({
+        projectId: id,
+        testCaseId: caseId,
+        feedback: feedback || undefined,
+      }),
     });
     const json = await res.json();
     if (!res.ok) {
-      setError(json.error || "Regeneration failed");
-      return;
+      throw new Error(json.error || "Regeneration failed");
     }
     await load();
   }
@@ -211,7 +214,7 @@ export default function ReviewPage() {
               onSave={(next) => saveCase(c.id, next)}
               onAccept={() => acceptCase(c.id)}
               onComment={(body) => addComment(c.id, body)}
-              onRegenerate={() => regenerate(c.id)}
+              onRegenerate={(feedback) => regenerate(c.id, feedback)}
             />
           ))}
         </div>

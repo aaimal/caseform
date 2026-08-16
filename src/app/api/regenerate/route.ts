@@ -5,6 +5,7 @@ import { ensureUserAndOrg } from "@/lib/auth/workspace";
 import {
   formatBriefForPrompt,
   formatExemplarsForPrompt,
+  sanitizeText,
   truncateSpec,
 } from "@/lib/exemplars/helpers";
 import { interpolate, loadPrompt } from "@/lib/prompts/loader";
@@ -21,6 +22,7 @@ import {
 const bodySchema = z.object({
   projectId: z.string().uuid(),
   testCaseId: z.string().uuid(),
+  feedback: z.string().trim().min(1).max(2000).optional(),
 });
 
 export async function POST(req: Request) {
@@ -39,8 +41,24 @@ export async function POST(req: Request) {
       displayName: user.user_metadata?.full_name,
     });
 
-    const { projectId, testCaseId } = bodySchema.parse(await req.json());
+    const { projectId, testCaseId, feedback } = bodySchema.parse(await req.json());
     const admin = createServiceClient();
+
+    if (feedback) {
+      const { error: commentError } = await admin.from("test_case_comments").insert({
+        org_id: orgId,
+        project_id: projectId,
+        test_case_id: testCaseId,
+        body: sanitizeText(feedback),
+        author_id: user.id,
+      });
+      if (commentError) {
+        return NextResponse.json(
+          { error: commentError.message },
+          { status: 500 },
+        );
+      }
+    }
 
     const { data: project } = await admin
       .from("projects")
