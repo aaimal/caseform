@@ -132,8 +132,12 @@ export default function ProjectWorkspacePage() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Generation failed");
+      const a = json.analysis;
       setMessage(
         `Generated ${json.count} cases` +
+          (a
+            ? ` · analysis: ${a.ambiguityCount} ambiguities, ${a.scenarioCount} scenarios, ${a.gapCount} AC gaps, ${a.highRiskCount} high-risk`
+            : "") +
           (json.droppedDrift
             ? ` (${json.droppedDrift} near-duplicate titles dropped)`
             : ""),
@@ -217,7 +221,9 @@ export default function ProjectWorkspacePage() {
       <section className="panel space-y-4 p-5">
         <h2 className="font-display text-lg">3 · Generation brief</h2>
         <p className="text-sm text-[var(--muted)]">
-          Detail and emphasis knobs. Exemplars still teach writing style.
+          Detail and emphasis knobs. Generate first runs requirement analysis
+          (ambiguity, scenarios, acceptance-criteria gaps, risk), then writes
+          cases 1:1 to the spec. Exemplars teach writing style.
         </p>
         <GenerationBriefForm value={brief} onChange={setBrief} />
         <div className="flex flex-wrap gap-3 pt-2">

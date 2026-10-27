@@ -24,6 +24,50 @@ export const requirementsSchema = z.object({
   ),
 });
 
+export const requirementAnalysisSchema = z.object({
+  requirements: z.array(
+    z.object({
+      id: z.string(),
+      text: z.string(),
+    }),
+  ),
+  ambiguities: z.array(
+    z.object({
+      id: z.string(),
+      excerpt: z.string(),
+      issue: z.string(),
+      suggestion: z.string(),
+    }),
+  ),
+  scenarios: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      type: z.enum(["happy", "alternative", "exception"]),
+      summary: z.string(),
+      requirementIds: z.array(z.string()),
+    }),
+  ),
+  acceptanceCriteriaGaps: z.array(
+    z.object({
+      id: z.string(),
+      requirementId: z.string(),
+      requirement: z.string(),
+      gap: z.string(),
+      suggestedCriteria: z.string(),
+    }),
+  ),
+  riskPriorities: z.array(
+    z.object({
+      scenarioId: z.string(),
+      riskLevel: z.enum(["high", "medium", "low"]),
+      rationale: z.string(),
+    }),
+  ),
+});
+
+export type RequirementAnalysis = z.infer<typeof requirementAnalysisSchema>;
+
 export const generationBriefSchema = z.object({
   detailLevel: z.enum(["smoke", "standard", "detailed"]).default("standard"),
   coverageIntent: z

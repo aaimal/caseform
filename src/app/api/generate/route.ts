@@ -10,7 +10,7 @@ import {
 } from "@/lib/exemplars/helpers";
 import { interpolate, loadPrompt } from "@/lib/prompts/loader";
 import {
-  requirementsJsonSchema,
+  requirementAnalysisJsonSchema,
   suiteJsonSchema,
 } from "@/lib/prompts/schemas";
 import { createServiceClient } from "@/lib/supabase/admin";
@@ -19,7 +19,7 @@ import {
   DEFAULT_BRIEF,
   generationBriefSchema,
   generatedSuiteSchema,
-  requirementsSchema,
+  requirementAnalysisSchema,
   type Step,
 } from "@/lib/types";
 
@@ -122,18 +122,24 @@ export async function POST(req: Request) {
     const briefVars = formatBriefForPrompt(brief);
     const ai = getAiProvider();
 
-    const extractTpl = loadPrompt("extract-requirements", "1");
-    const extractResult = await ai.generate({
-      model: extractTpl.model,
-      temperature: extractTpl.temperature,
-      responseSchema: requirementsJsonSchema as unknown as Record<string, unknown>,
+    // Pass A — requirement analysis (ambiguity, scenarios, AC gaps, risk)
+    const analyzeTpl = loadPrompt("analyze-requirements", "1");
+    const analyzeResult = await ai.generate({
+      model: analyzeTpl.model,
+      temperature: analyzeTpl.temperature,
+      responseSchema:
+        requirementAnalysisJsonSchema as unknown as Record<string, unknown>,
       prompt: {
-        system: extractTpl.system,
-        user: interpolate(extractTpl.user, { specText }),
+        system: analyzeTpl.system,
+        user: interpolate(analyzeTpl.user, {
+          specText,
+          ...briefVars,
+        }),
       },
     });
-    const requirements = requirementsSchema.parse(extractResult.parsed);
+    const analysis = requirementAnalysisSchema.parse(analyzeResult.parsed);
 
+    // Pass B — test cases guided by analysis, staying factual to the spec
     const genTpl = loadPrompt("generate-from-requirements", "1");
     const genResult = await ai.generate({
       model: genTpl.model,
@@ -143,7 +149,17 @@ export async function POST(req: Request) {
         system: interpolate(genTpl.system, briefVars),
         user: interpolate(genTpl.user, {
           specText,
-          requirementsJson: JSON.stringify(requirements.requirements, null, 2),
+          requirementsJson: JSON.stringify(analysis.requirements, null, 2),
+          analysisJson: JSON.stringify(
+            {
+              ambiguities: analysis.ambiguities,
+              scenarios: analysis.scenarios,
+              acceptanceCriteriaGaps: analysis.acceptanceCriteriaGaps,
+              riskPriorities: analysis.riskPriorities,
+            },
+            null,
+            2,
+          ),
           exemplarCases: formatExemplarsForPrompt(exemplarBodies),
           ...briefVars,
         }),
@@ -183,8 +199,14 @@ export async function POST(req: Request) {
         model: genResult.model,
         input_snapshot: {
           brief,
-          requirementCount: requirements.requirements.length,
-          requirements: requirements.requirements,
+          requirementCount: analysis.requirements.length,
+          requirements: analysis.requirements,
+          analysis: {
+            ambiguities: analysis.ambiguities,
+            scenarios: analysis.scenarios,
+            acceptanceCriteriaGaps: analysis.acceptanceCriteriaGaps,
+            riskPriorities: analysis.riskPriorities,
+          },
           exemplarIds: exemplarRows.map((e) => e.id),
           specTruncated: truncated,
           droppedDriftTitles: dropped.map((d) => d.title),
@@ -236,7 +258,15 @@ export async function POST(req: Request) {
       generationId: generation.id,
       count: inserted?.length ?? 0,
       droppedDrift: dropped.length,
-      requirements: requirements.requirements,
+      requirements: analysis.requirements,
+      analysis: {
+        ambiguityCount: analysis.ambiguities.length,
+        scenarioCount: analysis.scenarios.length,
+        gapCount: analysis.acceptanceCriteriaGaps.length,
+        highRiskCount: analysis.riskPriorities.filter(
+          (r) => r.riskLevel === "high",
+        ).length,
+      },
     });
   } catch (err) {
     console.error(err);

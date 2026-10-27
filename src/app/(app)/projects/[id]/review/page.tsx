@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { RequirementAnalysisPanel } from "@/components/RequirementAnalysisPanel";
 import { Stepper } from "@/components/Stepper";
 import { TestCaseCard } from "@/components/TestCaseCard";
 import { createClient } from "@/lib/supabase/client";
-import type { Step, TestCaseStatus } from "@/lib/types";
+import type { RequirementAnalysis, Step, TestCaseStatus } from "@/lib/types";
 
 type CaseRow = {
   id: string;
@@ -18,10 +19,19 @@ type CaseRow = {
   comments: { id: string; body: string; consumed: boolean }[];
 };
 
+type AnalysisView = Pick<
+  RequirementAnalysis,
+  | "ambiguities"
+  | "scenarios"
+  | "acceptanceCriteriaGaps"
+  | "riskPriorities"
+>;
+
 export default function ReviewPage() {
   const { id } = useParams<{ id: string }>();
   const [title, setTitle] = useState("");
   const [cases, setCases] = useState<CaseRow[]>([]);
+  const [analysis, setAnalysis] = useState<AnalysisView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [includeEdited, setIncludeEdited] = useState(false);
 
@@ -33,6 +43,18 @@ export default function ReviewPage() {
       .eq("id", id)
       .single();
     setTitle(project?.title ?? "");
+
+    const { data: generations } = await supabase
+      .from("generations")
+      .select("input_snapshot")
+      .eq("project_id", id)
+      .eq("kind", "generate")
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const snapshot = generations?.[0]?.input_snapshot as
+      | { analysis?: AnalysisView }
+      | undefined;
+    setAnalysis(snapshot?.analysis ?? null);
 
     const { data: rows } = await supabase
       .from("test_cases")
@@ -197,6 +219,8 @@ export default function ReviewPage() {
       </div>
 
       {error ? <p className="text-sm text-[var(--danger)]">{error}</p> : null}
+
+      <RequirementAnalysisPanel analysis={analysis} />
 
       {cases.length === 0 ? (
         <div className="panel p-8 text-center">
